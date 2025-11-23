@@ -1,0 +1,15 @@
+{
+    "dasent": {
+        "clave": "20171556",
+        "admin": true
+    },
+    "tcnomatic": {
+        "clave": "121212",
+        "admin": false,
+        "limites": {
+            "1": 30,
+            "3": 30,
+            "12": 30
+        }
+    }
+}
