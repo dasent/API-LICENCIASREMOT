@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Form, Header
+from fastapi import FastAPI, Form, Header, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta
@@ -317,6 +317,7 @@ async def validar(
 
 @app.post("/api/index.php")
 async def dhru_index(
+    request: Request,
     username: str = Form(...),
     apiaccesskey: str = Form(...),
     action: str = Form(...),
@@ -325,8 +326,14 @@ async def dhru_index(
 ):
     """
     Endpoint estilo Dhru Fusion (creditprocess).
-    Dhru llamará a:  https://TU_DOMINIO/api/index.php
+    Dhru llamará a:  https://remotpress-licencias-api.onrender.com/api/index.php
     """
+
+    # DEBUG: ver qué está llegando desde Dhru en los logs de Render
+    print("===== DHRU REQUEST =====")
+    print("action:", action)
+    print("parameters raw:", parameters)
+    print("========================")
 
     # 1) Validar API KEY (usa apiaccesskey como tu X-API-Key)
     if apiaccesskey not in API_KEYS:
@@ -374,8 +381,8 @@ async def dhru_index(
             "apiversion": DHRU_API_VERSION
         }
 
-    # placeimeiorder: aquí generamos la licencia
-    if action == "placeimeiorder":
+    # placeimeiorder / placefileorder: aquí generamos la licencia
+    if action in ("placeimeiorder", "placefileorder"):
         if not parameters:
             return {
                 "ERROR": [
@@ -410,7 +417,8 @@ async def dhru_index(
             except Exception:
                 service_id = None
 
-        meses = DHRU_SERVICE_ID_TO_MONTHS.get(service_id, 1)  # por defecto 1 mes
+        # por ahora: si no hay mapeo, 1 mes
+        meses = DHRU_SERVICE_ID_TO_MONTHS.get(service_id, 1)
 
         # 2.2 Obtener machine_hash (Machine ID) desde CUSTOMFIELD o IMEI
         machine_hash = ""
@@ -526,7 +534,7 @@ async def dhru_index(
         "ERROR": [
             {
                 "MESSAGE": f"Unsupported action '{action}'",
-                "FULL_DESCRIPTION": "Solo se implementan 'accountinfo' y 'placeimeiorder'."
+                "FULL_DESCRIPTION": "Solo se implementan 'accountinfo', 'placeimeiorder' y 'placefileorder'."
             }
         ],
         "apiversion": DHRU_API_VERSION
