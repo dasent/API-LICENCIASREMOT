@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI, Form, Header
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,6 +21,7 @@ app.add_middleware(
 )
 
 # ========== CARGA DE USUARIOS DESDE users.json ==========
+
 with open("users.json", "r", encoding="utf-8") as f:
     RAW_USERS = json.load(f)
 
@@ -34,14 +34,68 @@ for user, data in RAW_USERS.items():
         "admin": data.get("admin", False),
         "api_key": data.get("api_key")
     }
+
+    # Limites: claves a int
     limites_raw = data.get("limites", {})
-    if limites_raw:
-        info["limites"] = {int(k): v for k, v in limites_raw.items()}
+    limites_int = {}
+    for k, v in limites_raw.items():
+        try:
+            limites_int[int(k)] = int(v)
+        except Exception:
+            continue
+
+    # Usados: también a int y alineado con limites
+    usados_raw = data.get("usados", {})
+    usados_int = {}
+    for mk in limites_int.keys():
+        # tomar de usados_raw ya sea str(mk) o mk
+        val = usados_raw.get(str(mk), usados_raw.get(mk, 0))
+        try:
+            usados_int[mk] = int(val)
+        except Exception:
+            usados_int[mk] = 0
+
+    if limites_int:
+        info["limites"] = limites_int
+    if usados_int:
+        info["usados"] = usados_int
+    else:
+        # si hay límites pero no usados, inicializar en 0
+        if limites_int:
+            info["usados"] = {m: 0 for m in limites_int.keys()}
+
     USUARIOS[user] = info
 
     # Mapear api_key a usuario
     if info["api_key"]:
         API_KEYS[info["api_key"]] = user
+
+
+def guardar_usuarios_en_archivo():
+    """
+    Vuelca USUARIOS -> users.json con limites/usados como strings en las claves.
+    Así los contadores quedan persistentes.
+    """
+    data_out = {}
+    for user, info in USUARIOS.items():
+        item = {
+            "clave": info.get("clave"),
+            "admin": info.get("admin", False),
+            "api_key": info.get("api_key")
+        }
+        limites = info.get("limites", {})
+        usados = info.get("usados", {})
+
+        if limites:
+            item["limites"] = {str(k): int(v) for k, v in limites.items()}
+        if usados:
+            item["usados"] = {str(k): int(v) for k, v in usados.items()}
+
+        data_out[user] = item
+
+    with open("users.json", "w", encoding="utf-8") as f:
+        json.dump(data_out, f, ensure_ascii=False, indent=4)
+
 
 # Duraciones en días
 MESES_A_DIAS = {
@@ -50,15 +104,9 @@ MESES_A_DIAS = {
     12: 365
 }
 
-# Contadores de uso por distribuidor en memoria
-CONTADORES = {
-    user: {m: 0 for m in info.get("limites", {}).keys()}
-    for user, info in USUARIOS.items()
-    if not info.get("admin", False) and "limites" in info
-}
-
 
 # ========== FUNCIONES AUXILIARES ==========
+
 def generar_licencia(machine_hash: str, fecha_expira: str) -> str:
     """Genera la licencia con la lógica original de RemotPress."""
     fecha_compacta = fecha_expira.replace("-", "")
@@ -140,7 +188,7 @@ async def generar(
             "tipo": "admin-ilimitado"
         }
 
-    # 4) Usuario limitado: comprobar límites
+    # 4) Usuario limitado: comprobar límites PERSISTENTES
     limites = info_usuario.get("limites", {})
     if meses not in limites:
         return JSONResponse(
@@ -148,21 +196,28 @@ async def generar(
             status_code=403
         )
 
-    usados = CONTADORES.get(usuario, {m: 0 for m in limites.keys()})
-    if usados[meses] >= limites[meses]:
+    # Asegurar bloque 'usados'
+    usados = info_usuario.get("usados")
+    if usados is None:
+        usados = {m: 0 for m in limites.keys()}
+        info_usuario["usados"] = usados
+
+    if usados.get(meses, 0) >= limites[meses]:
         return JSONResponse(
             {
                 "status": "error",
                 "detail": f"Límite alcanzado para {meses} mes(es). "
-                          f"Permitidas: {limites[meses]}, usadas: {usados[meses]}"
+                          f"Permitidas: {limites[meses]}, usadas: {usados.get(meses, 0)}"
             },
             status_code=403
         )
 
-    # 5) Generar licencia y actualizar contador
+    # 5) Generar licencia y actualizar contador (memoria + archivo)
     licencia = generar_licencia(machine_hash.strip().upper(), fecha_expira)
-    usados[meses] += 1
-    CONTADORES[usuario] = usados
+    usados[meses] = usados.get(meses, 0) + 1
+    info_usuario["usados"] = usados
+    USUARIOS[usuario] = info_usuario
+    guardar_usuarios_en_archivo()
 
     return {
         "status": "ok",
