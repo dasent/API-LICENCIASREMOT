@@ -1,11 +1,13 @@
 {
     "dasent": {
         "clave": "20171556",
-        "admin": true
+        "admin": true,
+        "api_key": "RMT-API-ADMIN-999999"
     },
-    "tcnomatic": {
-        "clave": "121212",
+    "distribuidor_demo": {
+        "clave": "123456",
         "admin": false,
+        "api_key": "RMT-API-DEMO-123456",
         "limites": {
             "1": 30,
             "3": 30,
