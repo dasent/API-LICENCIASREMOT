@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 import hashlib
 import json
 import secrets  # para generar API Keys aleatorias
+import base64
+from xml.etree import ElementTree as ET
 
 app = FastAPI(
     title="API de Licencias RemotPress",
@@ -104,6 +106,18 @@ MESES_A_DIAS = {
     3: 90,
     12: 365
 }
+
+# Versión de API para respuestas tipo Dhru
+DHRU_API_VERSION = "5.2"
+
+# Mapeo opcional ID de servicio Dhru -> meses de licencia
+# Cuando tengas los IDs, puedes rellenar esto, por ejemplo:
+# DHRU_SERVICE_ID_TO_MONTHS = {
+#     1643: 1,   # REMOTPRESS TALLER 1 MONTH
+#     1644: 3,
+#     1645: 12,
+# }
+DHRU_SERVICE_ID_TO_MONTHS: dict[int, int] = {}
 
 
 # ========== FUNCIONES AUXILIARES ==========
@@ -296,6 +310,226 @@ async def validar(
     return {
         "status": "valid",
         "expira": fecha_expira
+    }
+
+
+# ========== ENDPOINT COMPATIBLE CON DHRU FUSION ==========
+
+@app.post("/api/index.php")
+async def dhru_index(
+    username: str = Form(...),
+    apiaccesskey: str = Form(...),
+    action: str = Form(...),
+    requestformat: str = Form("JSON"),
+    parameters: str = Form("")
+):
+    """
+    Endpoint estilo Dhru Fusion (creditprocess).
+    Dhru llamará a:  https://TU_DOMINIO/api/index.php
+    """
+
+    # 1) Validar API KEY (usa apiaccesskey como tu X-API-Key)
+    if apiaccesskey not in API_KEYS:
+        return {
+            "ERROR": [
+                {
+                    "MESSAGE": "Invalid API key",
+                    "FULL_DESCRIPTION": "apiaccesskey desconocido en RemotPress"
+                }
+            ],
+            "apiversion": DHRU_API_VERSION
+        }
+
+    usuario = API_KEYS[apiaccesskey]
+    info_usuario = USUARIOS.get(usuario, {})
+
+    if info_usuario.get("bloqueado", False):
+        return {
+            "ERROR": [
+                {
+                    "MESSAGE": "Blocked user",
+                    "FULL_DESCRIPTION": "Cuenta bloqueada en RemotPress"
+                }
+            ],
+            "apiversion": DHRU_API_VERSION
+        }
+
+    # 2) Acciones soportadas
+
+    # accountinfo (opcional, por si Dhru lo llama)
+    if action == "accountinfo":
+        credit_raw = 999999  # puedes cambiarlo por tu saldo real si quieres
+        return {
+            "SUCCESS": [
+                {
+                    "message": "Your Accout Info",
+                    "AccoutInfo": {
+                        "credit": str(credit_raw),
+                        "creditraw": str(credit_raw),
+                        "mail": f"{usuario}@remotpress.local",
+                        "currency": "USD"
+                    }
+                }
+            ],
+            "apiversion": DHRU_API_VERSION
+        }
+
+    # placeimeiorder: aquí generamos la licencia
+    if action == "placeimeiorder":
+        if not parameters:
+            return {
+                "ERROR": [
+                    {
+                        "MESSAGE": "Missing parameters",
+                        "FULL_DESCRIPTION": "Campo 'parameters' vacío"
+                    }
+                ],
+                "apiversion": DHRU_API_VERSION
+            }
+
+        # 2.1 Parsear el XML <PARAMETERS>...</PARAMETERS>
+        try:
+            root = ET.fromstring(parameters)
+        except Exception as e:
+            return {
+                "ERROR": [
+                    {
+                        "MESSAGE": "Invalid parameters XML",
+                        "FULL_DESCRIPTION": str(e)
+                    }
+                ],
+                "apiversion": DHRU_API_VERSION
+            }
+
+        # ID de servicio (por si quieres diferenciar 1 / 3 / 12 meses)
+        service_id = None
+        service_id_text = root.findtext("ID")
+        if service_id_text:
+            try:
+                service_id = int(service_id_text)
+            except Exception:
+                service_id = None
+
+        meses = DHRU_SERVICE_ID_TO_MONTHS.get(service_id, 1)  # por defecto 1 mes
+
+        # 2.2 Obtener machine_hash (Machine ID) desde CUSTOMFIELD o IMEI
+        machine_hash = ""
+
+        customfield = root.findtext("CUSTOMFIELD") or ""
+        if customfield:
+            # Dhru recomienda CUSTOMFIELD = base64(JSON)
+            try:
+                decoded = base64.b64decode(customfield).decode()
+                try:
+                    data = json.loads(decoded)
+                    if isinstance(data, dict):
+                        for key in ["MACHINE_ID", "MACHINE", "HASH", "SERIAL_NUMBER", "SERIAL", "SN"]:
+                            if key in data:
+                                machine_hash = str(data[key])
+                                break
+                    elif isinstance(data, str):
+                        machine_hash = data
+                except Exception:
+                    # No era JSON, usamos el texto tal cual
+                    if not machine_hash:
+                        machine_hash = decoded
+            except Exception:
+                # No era base64, usamos el texto tal cual
+                machine_hash = customfield
+
+        # Si no vino por CUSTOMFIELD, usamos IMEI como machine_hash
+        if not machine_hash:
+            machine_hash = (root.findtext("IMEI") or "").strip()
+
+        if not machine_hash:
+            return {
+                "ERROR": [
+                    {
+                        "MESSAGE": "Missing Machine ID",
+                        "FULL_DESCRIPTION": "No se encontró IMEI/MACHINE_ID en <PARAMETERS>"
+                    }
+                ],
+                "apiversion": DHRU_API_VERSION
+            }
+
+        # 2.3 Lógica de generación (igual que /api/generar)
+        dias = MESES_A_DIAS.get(meses)
+        if not dias:
+            return {
+                "ERROR": [
+                    {
+                        "MESSAGE": "Plan de meses no permitido",
+                        "FULL_DESCRIPTION": f"Meses={meses} no está configurado en el servidor"
+                    }
+                ],
+                "apiversion": DHRU_API_VERSION
+            }
+
+        fecha_expira = (datetime.now() + timedelta(days=dias)).strftime("%Y-%m-%d")
+        admin = info_usuario.get("admin", False)
+
+        if admin:
+            # Admin: ilimitado
+            licencia = generar_licencia(machine_hash.strip().upper(), fecha_expira)
+        else:
+            limites = info_usuario.get("limites", {})
+            if meses not in limites:
+                return {
+                    "ERROR": [
+                        {
+                            "MESSAGE": "Plan no permitido",
+                            "FULL_DESCRIPTION": f"El usuario {usuario} no tiene límite definido para {meses} mes(es)."
+                        }
+                    ],
+                    "apiversion": DHRU_API_VERSION
+                }
+
+            usados = info_usuario.get("usados")
+            if usados is None:
+                usados = {m: 0 for m in limites.keys()}
+                info_usuario["usados"] = usados
+
+            if usados.get(meses, 0) >= limites[meses]:
+                return {
+                    "ERROR": [
+                        {
+                            "MESSAGE": "License limit reached",
+                            "FULL_DESCRIPTION": (
+                                f"Límite alcanzado para {meses} mes(es). "
+                                f"Permitidas: {limites[meses]}, usadas: {usados.get(meses, 0)}"
+                            )
+                        }
+                    ],
+                    "apiversion": DHRU_API_VERSION
+                }
+
+            licencia = generar_licencia(machine_hash.strip().upper(), fecha_expira)
+            usados[meses] = usados.get(meses, 0) + 1
+            info_usuario["usados"] = usados
+            USUARIOS[usuario] = info_usuario
+            guardar_usuarios_en_archivo()
+
+        # 2.4 Respuesta OK en formato Dhru
+        return {
+            "SUCCESS": [
+                {
+                    "MESSAGE": "Order received",
+                    "REFERENCEID": licencia,   # aquí va la licencia
+                    "EXPIRE_DATE": fecha_expira
+                }
+            ],
+            "apiversion": DHRU_API_VERSION
+        }
+
+    # 3) Acción desconocida
+    return {
+        "ERROR": [
+            {
+                "MESSAGE": f"Unsupported action '{action}'",
+                "FULL_DESCRIPTION": "Solo se implementan 'accountinfo' y 'placeimeiorder'."
+            }
+        ],
+        "apiversion": DHRU_API_VERSION
     }
 
 
