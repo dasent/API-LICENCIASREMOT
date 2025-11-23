@@ -48,7 +48,6 @@ for user, data in RAW_USERS.items():
     usados_raw = data.get("usados", {})
     usados_int = {}
     for mk in limites_int.keys():
-        # tomar de usados_raw ya sea str(mk) o mk
         val = usados_raw.get(str(mk), usados_raw.get(mk, 0))
         try:
             usados_int[mk] = int(val)
@@ -60,7 +59,6 @@ for user, data in RAW_USERS.items():
     if usados_int:
         info["usados"] = usados_int
     else:
-        # si hay límites pero no usados, inicializar en 0
         if limites_int:
             info["usados"] = {m: 0 for m in limites_int.keys()}
 
@@ -73,7 +71,7 @@ for user, data in RAW_USERS.items():
 
 def guardar_usuarios_en_archivo():
     """
-    Vuelca USUARIOS -> users.json con limites/usados como strings en las claves.
+    Vuelca USUARIOS -> users.json con limites/usados como strings.
     Así los contadores quedan persistentes.
     """
     data_out = {}
@@ -235,9 +233,9 @@ async def validar(
     machine_hash: str = Form(...),
     api_key: str = Header(default=None, alias="X-API-Key")
 ):
-    """Valida una licencia. Autenticación por API Key opcional (aquí está activada)."""
+    """Valida una licencia. Autenticación por API Key activada."""
 
-    # Si quieres que solo clientes autorizados validen, autenticamos también aquí
+    # Autenticar también aquí si quieres control
     try:
         _, _ = autenticar_api_key(api_key)
     except JSONResponse as e:
@@ -274,4 +272,87 @@ async def validar(
     return {
         "status": "valid",
         "expira": fecha_expira
+    }
+
+
+@app.post("/api/admin/crear_distribuidor")
+async def crear_distribuidor(
+    nombre: str = Form(..., description="Nombre de usuario del distribuidor (ej: tcnomatic2)"),
+    clave: str = Form(..., description="Clave interna para este usuario"),
+    api_key_nueva: str = Form(..., description="API Key que se le dará al distribuidor"),
+    limite_1: int = Form(0, description="Cantidad máxima de licencias de 1 mes"),
+    limite_3: int = Form(0, description="Cantidad máxima de licencias de 3 meses"),
+    limite_12: int = Form(0, description="Cantidad máxima de licencias de 12 meses"),
+    admin_api_key: str = Header(default=None, alias="X-API-Key")
+):
+    """
+    Crea un nuevo distribuidor en users.json.
+    Solo puede ser llamado con una API Key de ADMIN (por ejemplo, dasent).
+    """
+
+    # 1) Verificar que quien llama es admin
+    try:
+        usuario_admin, info_admin = autenticar_api_key(admin_api_key)
+    except JSONResponse as e:
+        return e
+
+    if not info_admin.get("admin", False):
+        return JSONResponse(
+            {"status": "error", "detail": "Solo un usuario ADMIN puede crear distribuidores."},
+            status_code=403
+        )
+
+    # 2) Validar que no exista el usuario ni la api_key
+    if nombre in USUARIOS:
+        return JSONResponse(
+            {"status": "error", "detail": f"Ya existe un usuario con el nombre '{nombre}'."},
+            status_code=400
+        )
+
+    if api_key_nueva in API_KEYS:
+        return JSONResponse(
+            {"status": "error", "detail": "Esa API Key ya está en uso por otro usuario."},
+            status_code=400
+        )
+
+    # 3) Construir limites
+    limites = {}
+    if limite_1 > 0:
+        limites[1] = limite_1
+    if limite_3 > 0:
+        limites[3] = limite_3
+    if limite_12 > 0:
+        limites[12] = limite_12
+
+    # 4) Crear entrada en memoria (USUARIOS, API_KEYS, RAW_USERS)
+    info_nuevo = {
+        "clave": clave,
+        "admin": False,
+        "api_key": api_key_nueva
+    }
+    if limites:
+        info_nuevo["limites"] = limites
+        info_nuevo["usados"] = {m: 0 for m in limites.keys()}
+
+    USUARIOS[nombre] = info_nuevo
+    API_KEYS[api_key_nueva] = nombre
+
+    # Actualizar RAW_USERS y guardar en users.json
+    RAW_USERS[nombre] = {
+        "clave": clave,
+        "admin": False,
+        "api_key": api_key_nueva,
+        "limites": {str(k): v for k, v in limites.items()},
+        "usados": {str(k): 0 for k in limites.keys()}
+    }
+
+    with open("users.json", "w", encoding="utf-8") as f:
+        json.dump(RAW_USERS, f, ensure_ascii=False, indent=4)
+
+    return {
+        "status": "ok",
+        "detail": "Distribuidor creado correctamente.",
+        "usuario": nombre,
+        "api_key": api_key_nueva,
+        "limites": limites
     }
