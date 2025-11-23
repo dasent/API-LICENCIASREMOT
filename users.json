@@ -1,17 +1,17 @@
 {
-    "dasent": {
-        "clave": "20171556",
-        "admin": true,
-        "api_key": "RMT-API-ADMIN-999999"
-    },
-    "distribuidor_demo": {
-        "clave": "123456",
-        "admin": false,
-        "api_key": "RMT-API-DEMO-123456",
-        "limites": {
-            "1": 30,
-            "3": 30,
-            "12": 30
-        }
+  "dasent": {
+    "clave": "20171556",
+    "admin": true,
+    "api_key": "RMT-API-ADMIN-DASENT-2025"
+  },
+  "tcnomatic": {
+    "clave": "121212",
+    "admin": false,
+    "api_key": "RMT-API-TCNOMATIC-2025",
+    "limites": {
+      "1": 30,
+      "3": 30,
+      "12": 30
     }
+  }
 }
