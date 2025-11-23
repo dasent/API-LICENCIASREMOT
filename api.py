@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta
 import hashlib
 import json
+import secrets  # <- para generar API Keys aleatorias
 
 app = FastAPI(
     title="API de Licencias RemotPress",
@@ -279,7 +280,10 @@ async def validar(
 async def crear_distribuidor(
     nombre: str = Form(..., description="Nombre de usuario del distribuidor (ej: tcnomatic2)"),
     clave: str = Form(..., description="Clave interna para este usuario"),
-    api_key_nueva: str = Form(..., description="API Key que se le dará al distribuidor"),
+    api_key_nueva: str | None = Form(
+        None,
+        description="API Key para el distribuidor. Si se deja vacío, se genera automáticamente."
+    ),
     limite_1: int = Form(0, description="Cantidad máxima de licencias de 1 mes"),
     limite_3: int = Form(0, description="Cantidad máxima de licencias de 3 meses"),
     limite_12: int = Form(0, description="Cantidad máxima de licencias de 12 meses"),
@@ -288,6 +292,7 @@ async def crear_distribuidor(
     """
     Crea un nuevo distribuidor en users.json.
     Solo puede ser llamado con una API Key de ADMIN (por ejemplo, dasent).
+    Si 'api_key_nueva' viene vacío, se genera automáticamente.
     """
 
     # 1) Verificar que quien llama es admin
@@ -302,20 +307,32 @@ async def crear_distribuidor(
             status_code=403
         )
 
-    # 2) Validar que no exista el usuario ni la api_key
+    # 2) Validar que no exista el usuario
     if nombre in USUARIOS:
         return JSONResponse(
             {"status": "error", "detail": f"Ya existe un usuario con el nombre '{nombre}'."},
             status_code=400
         )
 
-    if api_key_nueva in API_KEYS:
-        return JSONResponse(
-            {"status": "error", "detail": "Esa API Key ya está en uso por otro usuario."},
-            status_code=400
-        )
+    # 3) Si no se envió api_key_nueva, generarla automáticamente
+    if not api_key_nueva or not api_key_nueva.strip():
+        # Genera algo como: RMT-API-NOMBRE-XXXXXXXXXXXXXXX
+        base_nombre = nombre.upper().replace(" ", "")
+        while True:
+            random_suffix = secrets.token_hex(8).upper()  # 16 chars hex
+            candidate = f"RMT-API-{base_nombre}-{random_suffix}"
+            if candidate not in API_KEYS:
+                api_key_nueva = candidate
+                break
+    else:
+        # Verificar que la API Key no esté repetida si la mandan manualmente
+        if api_key_nueva in API_KEYS:
+            return JSONResponse(
+                {"status": "error", "detail": "Esa API Key ya está en uso por otro usuario."},
+                status_code=400
+            )
 
-    # 3) Construir limites
+    # 4) Construir limites
     limites = {}
     if limite_1 > 0:
         limites[1] = limite_1
@@ -324,7 +341,7 @@ async def crear_distribuidor(
     if limite_12 > 0:
         limites[12] = limite_12
 
-    # 4) Crear entrada en memoria (USUARIOS, API_KEYS, RAW_USERS)
+    # 5) Crear entrada en memoria (USUARIOS, API_KEYS, RAW_USERS)
     info_nuevo = {
         "clave": clave,
         "admin": False,
