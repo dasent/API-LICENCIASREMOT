@@ -9,7 +9,7 @@
     "admin": false,
     "api_key": "RMT-API-TCNOMATIC-2025",
     "limites": {
-      "1": 2,
+      "1": 10,
       "3": 3,
       "12": 3
     }
