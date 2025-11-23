@@ -117,7 +117,9 @@ DHRU_API_VERSION = "5.2"
 #     1644: 3,
 #     1645: 12,
 # }
-DHRU_SERVICE_ID_TO_MONTHS: dict[int, int] = {}
+DHRU_SERVICE_ID_TO_MONTHS: dict[int, int] = {
+    1643: 1  # REMOTPRESS TALLER 1 MONTH (ajusta si cambia el ID)
+}
 
 
 # ========== FUNCIONES AUXILIARES ==========
@@ -334,6 +336,9 @@ async def dhru_index(
     print("action:", action)
     print("parameters raw:", parameters)
     print("========================")
+
+    # normalizar acción a minúsculas
+    action = (action or "").strip().lower()
 
     # 1) Validar API KEY (usa apiaccesskey como tu X-API-Key)
     if apiaccesskey not in API_KEYS:
