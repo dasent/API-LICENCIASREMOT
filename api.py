@@ -295,14 +295,6 @@ async def validar(
             "expira": fecha_expira
         }
 
-    # (Opcional) Validación estricta con machine_hash:
-    # licencia_recalc = generar_licencia(machine_hash.strip().upper(), fecha_expira)
-    # if licencia_recalc != codigo:
-    #     return {
-    #         "status": "invalid",
-    #         "detail": "El código no corresponde al machine_hash provisto."
-    #     }
-
     return {
         "status": "valid",
         "expira": fecha_expira
@@ -419,12 +411,12 @@ async def dhru_index(
         # por ahora: si no hay mapeo, 1 mes
         meses = DHRU_SERVICE_ID_TO_MONTHS.get(service_id, 1)
 
-        # 2.2 Obtener machine_hash (Machine ID) desde CUSTOMFIELD, FIELD1, IMEI, etc.
+        # 2.2 Obtener machine_hash (Machine ID) desde CUSTOMFIELD o IMEI
         machine_hash = ""
 
-        # a) CUSTOMFIELD (base64 JSON o texto)
         customfield = root.findtext("CUSTOMFIELD") or ""
         if customfield:
+            # Dhru recomienda CUSTOMFIELD = base64(JSON)
             try:
                 decoded = base64.b64decode(customfield).decode()
                 try:
@@ -437,30 +429,23 @@ async def dhru_index(
                     elif isinstance(data, str):
                         machine_hash = data
                 except Exception:
+                    # No era JSON, usamos el texto tal cual
                     if not machine_hash:
                         machine_hash = decoded
             except Exception:
+                # No era base64, usamos el texto tal cual
                 machine_hash = customfield
 
-        # b) Si sigue vacío, buscamos en TAGS típicos de Dhru: FIELD1, FIELD2, FIELD3, IMEI...
+        # Si no vino por CUSTOMFIELD, usamos IMEI como machine_hash
         if not machine_hash:
-            for tag in [
-                "FIELD1", "FIELD2", "FIELD3",
-                "MACHINE_ID", "MACHINE", "HASH",
-                "SERIAL_NUMBER", "SERIAL", "SN",
-                "IMEI"
-            ]:
-                val = root.findtext(tag)
-                if val and val.strip():
-                    machine_hash = val.strip()
-                    break
+            machine_hash = (root.findtext("IMEI") or "").strip()
 
         if not machine_hash:
             return {
                 "ERROR": [
                     {
                         "MESSAGE": "Missing Machine ID",
-                        "FULL_DESCRIPTION": "No se encontró IMEI/MACHINE_ID/FIELD1 en <PARAMETERS>"
+                        "FULL_DESCRIPTION": "No se encontró IMEI/MACHINE_ID en <PARAMETERS>"
                     }
                 ],
                 "apiversion": DHRU_API_VERSION
@@ -545,6 +530,20 @@ async def dhru_index(
         ],
         "apiversion": DHRU_API_VERSION
     }
+
+
+# Alias para compatibilidad: algunos paneles Dhru llaman a /index.php (sin /api)
+@app.post("/index.php")
+async def dhru_index_root(
+    request: Request,
+    username: str = Form(...),
+    apiaccesskey: str = Form(...),
+    action: str = Form(...),
+    requestformat: str = Form("JSON"),
+    parameters: str = Form("")
+):
+    """Alias que reenvía a /api/index.php para máxima compatibilidad."""
+    return await dhru_index(request, username, apiaccesskey, action, requestformat, parameters)
 
 
 # ========== ENDPOINTS DE ADMINISTRACIÓN ==========
