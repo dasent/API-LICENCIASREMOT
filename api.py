@@ -110,7 +110,7 @@ MESES_A_DIAS = {
 # Versión de API para respuestas tipo Dhru
 DHRU_API_VERSION = "5.2"
 
-# Mapeo ID de servicio Dhru -> meses de licencia
+# Mapeo opcional ID de servicio Dhru -> meses de licencia
 DHRU_SERVICE_ID_TO_MONTHS: dict[int, int] = {
     1643: 1  # REMOTPRESS TALLER 1 MONTH (ajusta si cambia el ID)
 }
@@ -309,24 +309,24 @@ async def validar(
     }
 
 
-# ========== IMPLEMENTACIÓN COMÚN PARA DHRU FUSION ==========
+# ========== ENDPOINT COMPATIBLE CON DHRU FUSION ==========
 
-async def _dhru_index_impl(
+@app.post("/api/index.php")
+async def dhru_index(
     request: Request,
-    username: str,
-    apiaccesskey: str,
-    action: str,
-    requestformat: str = "JSON",
-    parameters: str = ""
+    username: str = Form(...),
+    apiaccesskey: str = Form(...),
+    action: str = Form(...),
+    requestformat: str = Form("JSON"),
+    parameters: str = Form("")
 ):
     """
-    Lógica común para manejar llamadas estilo Dhru Fusion.
-    Este método lo usan /api/index.php y /index.php.
+    Endpoint estilo Dhru Fusion (creditprocess).
+    Dhru llamará a:  https://remotpress-licencias-api.onrender.com/api/index.php
     """
 
     # DEBUG: ver qué está llegando desde Dhru en los logs de Render
     print("===== DHRU REQUEST =====")
-    print("path:", request.url.path)
     print("action:", action)
     print("parameters raw:", parameters)
     print("========================")
@@ -419,12 +419,12 @@ async def _dhru_index_impl(
         # por ahora: si no hay mapeo, 1 mes
         meses = DHRU_SERVICE_ID_TO_MONTHS.get(service_id, 1)
 
-         # 2.2 Obtener machine_hash (Machine ID) desde CUSTOMFIELD / IMEI / cualquier otro campo
+        # 2.2 Obtener machine_hash (Machine ID) desde CUSTOMFIELD, FIELD1, IMEI, etc.
         machine_hash = ""
 
+        # a) CUSTOMFIELD (base64 JSON o texto)
         customfield = root.findtext("CUSTOMFIELD") or ""
         if customfield:
-            # Dhru recomienda CUSTOMFIELD = base64(JSON)
             try:
                 decoded = base64.b64decode(customfield).decode()
                 try:
@@ -437,25 +437,22 @@ async def _dhru_index_impl(
                     elif isinstance(data, str):
                         machine_hash = data
                 except Exception:
-                    # No era JSON, usamos el texto tal cual
                     if not machine_hash:
                         machine_hash = decoded
             except Exception:
-                # No era base64, usamos el texto tal cual
                 machine_hash = customfield
 
-        # Si no vino por CUSTOMFIELD, usamos IMEI como machine_hash
+        # b) Si sigue vacío, buscamos en TAGS típicos de Dhru: FIELD1, FIELD2, FIELD3, IMEI...
         if not machine_hash:
-            imei_text = root.findtext("IMEI") or ""
-            machine_hash = imei_text.strip()
-
-        # NUEVO: si sigue vacío, tomamos el PRIMER campo no vacío del XML,
-        # por si Dhru usa otro nombre para el campo (ej: MACHINEIDNUMERODEMAQUINA, etc.)
-        if not machine_hash:
-            for child in root:
-                txt = (child.text or "").strip()
-                if txt:
-                    machine_hash = txt
+            for tag in [
+                "FIELD1", "FIELD2", "FIELD3",
+                "MACHINE_ID", "MACHINE", "HASH",
+                "SERIAL_NUMBER", "SERIAL", "SN",
+                "IMEI"
+            ]:
+                val = root.findtext(tag)
+                if val and val.strip():
+                    machine_hash = val.strip()
                     break
 
         if not machine_hash:
@@ -463,7 +460,7 @@ async def _dhru_index_impl(
                 "ERROR": [
                     {
                         "MESSAGE": "Missing Machine ID",
-                        "FULL_DESCRIPTION": "No se encontró IMEI/MACHINE_ID en <PARAMETERS>"
+                        "FULL_DESCRIPTION": "No se encontró IMEI/MACHINE_ID/FIELD1 en <PARAMETERS>"
                     }
                 ],
                 "apiversion": DHRU_API_VERSION
@@ -548,38 +545,6 @@ async def _dhru_index_impl(
         ],
         "apiversion": DHRU_API_VERSION
     }
-
-
-# ========== ENDPOINTS COMPATIBLES DHRU (DOS RUTAS) ==========
-
-@app.post("/api/index.php")
-async def dhru_index_api(
-    request: Request,
-    username: str = Form(...),
-    apiaccesskey: str = Form(...),
-    action: str = Form(...),
-    requestformat: str = Form("JSON"),
-    parameters: str = Form("")
-):
-    """
-    Ruta principal pensada para: https://dominio.com/api/index.php
-    """
-    return await _dhru_index_impl(request, username, apiaccesskey, action, requestformat, parameters)
-
-
-@app.post("/index.php")
-async def dhru_index_root(
-    request: Request,
-    username: str = Form(...),
-    apiaccesskey: str = Form(...),
-    action: str = Form(...),
-    requestformat: str = Form("JSON"),
-    parameters: str = Form("")
-):
-    """
-    Ruta espejo por si Dhru llama a https://dominio.com/index.php
-    """
-    return await _dhru_index_impl(request, username, apiaccesskey, action, requestformat, parameters)
 
 
 # ========== ENDPOINTS DE ADMINISTRACIÓN ==========
