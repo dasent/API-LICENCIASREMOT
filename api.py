@@ -546,6 +546,29 @@ async def dhru_index_root(
     return await dhru_index(request, username, apiaccesskey, action, requestformat, parameters)
 
 
+# Alias legacy para Dhru que llama a /api en lugar de /api/index.php
+# Algunos paneles Dhru usan solo ".../api" como URL base.
+@app.post("/api")
+async def dhru_index_legacy(
+    request: Request,
+    username: str = Form(...),
+    apiaccesskey: str = Form(...),
+    action: str = Form(...),
+    requestformat: str = Form("JSON"),
+    parameters: str = Form("")
+):
+    # Simplemente reutilizamos la misma lógica del endpoint principal
+    return await dhru_index(
+        request=request,
+        username=username,
+        apiaccesskey=apiaccesskey,
+        action=action,
+        requestformat=requestformat,
+        parameters=parameters,
+    )
+
+
+
 # ========== ENDPOINTS DE ADMINISTRACIÓN ==========
 
 @app.post("/api/admin/crear_distribuidor")
