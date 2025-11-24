@@ -115,6 +115,7 @@ DHRU_SERVICE_ID_TO_MONTHS: dict[int, int] = {
     1643: 1  # REMOTPRESS TALLER 1 MONTH (ajusta si cambia el ID)
 }
 
+
 # ========== FUNCIONES AUXILIARES ==========
 
 def generar_licencia(machine_hash: str, fecha_expira: str) -> str:
@@ -294,61 +295,44 @@ async def validar(
             "expira": fecha_expira
         }
 
+    # (Opcional) Validación estricta con machine_hash:
+    # licencia_recalc = generar_licencia(machine_hash.strip().upper(), fecha_expira)
+    # if licencia_recalc != codigo:
+    #     return {
+    #         "status": "invalid",
+    #         "detail": "El código no corresponde al machine_hash provisto."
+    #     }
+
     return {
         "status": "valid",
         "expira": fecha_expira
     }
 
 
-# ========== ENDPOINT COMPATIBLE CON DHRU FUSION ==========
+# ========== IMPLEMENTACIÓN COMÚN PARA DHRU FUSION ==========
 
-@app.post("/api/index.php")
-async def dhru_index(request: Request):
+async def _dhru_index_impl(
+    request: Request,
+    username: str,
+    apiaccesskey: str,
+    action: str,
+    requestformat: str = "JSON",
+    parameters: str = ""
+):
     """
-    Endpoint estilo Dhru Fusion (creditprocess).
-    Dhru llamará a:  https://remotpress-licencias-api.onrender.com/api/index.php
-    Acepta tanto JSON como x-www-form-urlencoded.
+    Lógica común para manejar llamadas estilo Dhru Fusion.
+    Este método lo usan /api/index.php y /index.php.
     """
-    # 0) Leer body como JSON o form
-    try:
-        content_type = (request.headers.get("content-type") or "").lower()
-        if "application/json" in content_type:
-            data = await request.json()
-        else:
-            form = await request.form()
-            data = dict(form)
-    except Exception as e:
-        print("Error parseando cuerpo Dhru:", e)
-        return {
-            "ERROR": [
-                {
-                    "MESSAGE": "Invalid request",
-                    "FULL_DESCRIPTION": str(e),
-                }
-            ],
-            "apiversion": DHRU_API_VERSION,
-        }
 
     # DEBUG: ver qué está llegando desde Dhru en los logs de Render
     print("===== DHRU REQUEST =====")
-    print("DATA:", data)
-
-    username = (data.get("username") or "").strip()
-    apiaccesskey = (
-        data.get("apiaccesskey")
-        or data.get("apikey")
-        or data.get("api_key")
-        or ""
-    )
-    apiaccesskey = apiaccesskey.strip()
-    action = (data.get("action") or "").strip().lower()
-    parameters = data.get("parameters") or data.get("PARAMETERS") or ""
-
-    print("username:", username)
-    print("apiaccesskey:", apiaccesskey)
+    print("path:", request.url.path)
     print("action:", action)
     print("parameters raw:", parameters)
     print("========================")
+
+    # normalizar acción a minúsculas
+    action = (action or "").strip().lower()
 
     # 1) Validar API KEY (usa apiaccesskey como tu X-API-Key)
     if apiaccesskey not in API_KEYS:
@@ -356,10 +340,10 @@ async def dhru_index(request: Request):
             "ERROR": [
                 {
                     "MESSAGE": "Invalid API key",
-                    "FULL_DESCRIPTION": "apiaccesskey desconocido en RemotPress",
+                    "FULL_DESCRIPTION": "apiaccesskey desconocido en RemotPress"
                 }
             ],
-            "apiversion": DHRU_API_VERSION,
+            "apiversion": DHRU_API_VERSION
         }
 
     usuario = API_KEYS[apiaccesskey]
@@ -370,10 +354,10 @@ async def dhru_index(request: Request):
             "ERROR": [
                 {
                     "MESSAGE": "Blocked user",
-                    "FULL_DESCRIPTION": "Cuenta bloqueada en RemotPress",
+                    "FULL_DESCRIPTION": "Cuenta bloqueada en RemotPress"
                 }
             ],
-            "apiversion": DHRU_API_VERSION,
+            "apiversion": DHRU_API_VERSION
         }
 
     # 2) Acciones soportadas
@@ -389,11 +373,11 @@ async def dhru_index(request: Request):
                         "credit": str(credit_raw),
                         "creditraw": str(credit_raw),
                         "mail": f"{usuario}@remotpress.local",
-                        "currency": "USD",
-                    },
+                        "currency": "USD"
+                    }
                 }
             ],
-            "apiversion": DHRU_API_VERSION,
+            "apiversion": DHRU_API_VERSION
         }
 
     # placeimeiorder / placefileorder: aquí generamos la licencia
@@ -403,142 +387,89 @@ async def dhru_index(request: Request):
                 "ERROR": [
                     {
                         "MESSAGE": "Missing parameters",
-                        "FULL_DESCRIPTION": "Campo 'parameters' vacío",
+                        "FULL_DESCRIPTION": "Campo 'parameters' vacío"
                     }
                 ],
-                "apiversion": DHRU_API_VERSION,
+                "apiversion": DHRU_API_VERSION
             }
 
-        # --- 2.1 Normalizar parameters: puede venir dict o string XML ---
+        # 2.1 Parsear el XML <PARAMETERS>...</PARAMETERS>
+        try:
+            root = ET.fromstring(parameters)
+        except Exception as e:
+            return {
+                "ERROR": [
+                    {
+                        "MESSAGE": "Invalid parameters XML",
+                        "FULL_DESCRIPTION": str(e)
+                    }
+                ],
+                "apiversion": DHRU_API_VERSION
+            }
+
+        # ID de servicio (por si quieres diferenciar 1 / 3 / 12 meses)
         service_id = None
+        service_id_text = root.findtext("ID")
+        if service_id_text:
+            try:
+                service_id = int(service_id_text)
+            except Exception:
+                service_id = None
+
+        # por ahora: si no hay mapeo, 1 mes
+        meses = DHRU_SERVICE_ID_TO_MONTHS.get(service_id, 1)
+
+        # 2.2 Obtener machine_hash (Machine ID) desde CUSTOMFIELD o IMEI
         machine_hash = ""
 
-        if isinstance(parameters, dict):
-            # Formato JSON nativo
-            service_id_val = parameters.get("ID") or parameters.get("ServiceID")
-            if service_id_val is not None:
-                try:
-                    service_id = int(service_id_val)
-                except Exception:
-                    service_id = None
-
-            # CUSTOMFIELD -> mismo tratamiento que abajo
-            customfield = (
-                parameters.get("CUSTOMFIELD")
-                or parameters.get("customfield")
-                or ""
-            )
-
-            if customfield:
-                try:
-                    decoded = base64.b64decode(customfield).decode()
-                    try:
-                        data_cf = json.loads(decoded)
-                        if isinstance(data_cf, dict):
-                            for key in [
-                                "MACHINE_ID",
-                                "MACHINE",
-                                "HASH",
-                                "SERIAL_NUMBER",
-                                "SERIAL",
-                                "SN",
-                            ]:
-                                if key in data_cf:
-                                    machine_hash = str(data_cf[key])
-                                    break
-                        elif isinstance(data_cf, str):
-                            machine_hash = data_cf
-                    except Exception:
-                        if not machine_hash:
-                            machine_hash = decoded
-                except Exception:
-                    machine_hash = customfield
-
-            if not machine_hash:
-                machine_hash = (
-                    parameters.get("MACHINE_ID")
-                    or parameters.get("machine_id")
-                    or parameters.get("IMEI")
-                    or ""
-                )
-                machine_hash = str(machine_hash).strip()
-
-        else:
-            # Asumimos string (lo que usa Dhru por defecto: XML <PARAMETERS>...</PARAMETERS>)
-            parameters_str = str(parameters).strip()
+        customfield = root.findtext("CUSTOMFIELD") or ""
+        if customfield:
+            # Dhru recomienda CUSTOMFIELD = base64(JSON)
             try:
-                root = ET.fromstring(parameters_str)
-            except Exception as e:
-                return {
-                    "ERROR": [
-                        {
-                            "MESSAGE": "Invalid parameters XML",
-                            "FULL_DESCRIPTION": str(e),
-                        }
-                    ],
-                    "apiversion": DHRU_API_VERSION,
-                }
-
-            service_id_text = root.findtext("ID")
-            if service_id_text:
+                decoded = base64.b64decode(customfield).decode()
                 try:
-                    service_id = int(service_id_text)
+                    data = json.loads(decoded)
+                    if isinstance(data, dict):
+                        for key in ["MACHINE_ID", "MACHINE", "HASH", "SERIAL_NUMBER", "SERIAL", "SN"]:
+                            if key in data:
+                                machine_hash = str(data[key])
+                                break
+                    elif isinstance(data, str):
+                        machine_hash = data
                 except Exception:
-                    service_id = None
+                    # No era JSON, usamos el texto tal cual
+                    if not machine_hash:
+                        machine_hash = decoded
+            except Exception:
+                # No era base64, usamos el texto tal cual
+                machine_hash = customfield
 
-            customfield = root.findtext("CUSTOMFIELD") or ""
-            if customfield:
-                try:
-                    decoded = base64.b64decode(customfield).decode()
-                    try:
-                        data_cf = json.loads(decoded)
-                        if isinstance(data_cf, dict):
-                            for key in [
-                                "MACHINE_ID",
-                                "MACHINE",
-                                "HASH",
-                                "SERIAL_NUMBER",
-                                "SERIAL",
-                                "SN",
-                            ]:
-                                if key in data_cf:
-                                    machine_hash = str(data_cf[key])
-                                    break
-                        elif isinstance(data_cf, str):
-                            machine_hash = data_cf
-                    except Exception:
-                        if not machine_hash:
-                            machine_hash = decoded
-                except Exception:
-                    machine_hash = customfield
-
-            if not machine_hash:
-                machine_hash = (root.findtext("IMEI") or "").strip()
+        # Si no vino por CUSTOMFIELD, usamos IMEI como machine_hash
+        if not machine_hash:
+            machine_hash = (root.findtext("IMEI") or "").strip()
 
         if not machine_hash:
             return {
                 "ERROR": [
                     {
                         "MESSAGE": "Missing Machine ID",
-                        "FULL_DESCRIPTION": "No se encontró IMEI/MACHINE_ID en parameters",
+                        "FULL_DESCRIPTION": "No se encontró IMEI/MACHINE_ID en <PARAMETERS>"
                     }
                 ],
-                "apiversion": DHRU_API_VERSION,
+                "apiversion": DHRU_API_VERSION
             }
 
-        # --- 2.3 Lógica de meses por ID de servicio ---
-        meses = DHRU_SERVICE_ID_TO_MONTHS.get(service_id, 1)
-
+        # 2.3 Lógica de generación (igual que /api/generar)
         dias = MESES_A_DIAS.get(meses)
         if not dias:
             return {
                 "ERROR": [
                     {
                         "MESSAGE": "Plan de meses no permitido",
-                        "FULL_DESCRIPTION": f"Meses={meses} no está configurado en el servidor",
+                        "FULL_DESCRIPTION": f"Meses={meses} no está configurado en el servidor"
                     }
                 ],
-                "apiversion": DHRU_API_VERSION,
+                "apiversion": DHRU_API_VERSION
             }
 
         fecha_expira = (datetime.now() + timedelta(days=dias)).strftime("%Y-%m-%d")
@@ -554,10 +485,10 @@ async def dhru_index(request: Request):
                     "ERROR": [
                         {
                             "MESSAGE": "Plan no permitido",
-                            "FULL_DESCRIPTION": f"El usuario {usuario} no tiene límite definido para {meses} mes(es).",
+                            "FULL_DESCRIPTION": f"El usuario {usuario} no tiene límite definido para {meses} mes(es)."
                         }
                     ],
-                    "apiversion": DHRU_API_VERSION,
+                    "apiversion": DHRU_API_VERSION
                 }
 
             usados = info_usuario.get("usados")
@@ -573,10 +504,10 @@ async def dhru_index(request: Request):
                             "FULL_DESCRIPTION": (
                                 f"Límite alcanzado para {meses} mes(es). "
                                 f"Permitidas: {limites[meses]}, usadas: {usados.get(meses, 0)}"
-                            ),
+                            )
                         }
                     ],
-                    "apiversion": DHRU_API_VERSION,
+                    "apiversion": DHRU_API_VERSION
                 }
 
             licencia = generar_licencia(machine_hash.strip().upper(), fecha_expira)
@@ -591,11 +522,10 @@ async def dhru_index(request: Request):
                 {
                     "MESSAGE": "Order received",
                     "REFERENCEID": licencia,   # aquí va la licencia
-                    "EXPIRE_DATE": fecha_expira,
-                    "CODE": licencia,          # para que aparezca en CÓDIGO de la orden
+                    "EXPIRE_DATE": fecha_expira
                 }
             ],
-            "apiversion": DHRU_API_VERSION,
+            "apiversion": DHRU_API_VERSION
         }
 
     # 3) Acción desconocida
@@ -603,11 +533,43 @@ async def dhru_index(request: Request):
         "ERROR": [
             {
                 "MESSAGE": f"Unsupported action '{action}'",
-                "FULL_DESCRIPTION": "Solo se implementan 'accountinfo', 'placeimeiorder' y 'placefileorder'.",
+                "FULL_DESCRIPTION": "Solo se implementan 'accountinfo', 'placeimeiorder' y 'placefileorder'."
             }
         ],
-        "apiversion": DHRU_API_VERSION,
+        "apiversion": DHRU_API_VERSION
     }
+
+
+# ========== ENDPOINTS COMPATIBLES DHRU (DOS RUTAS) ==========
+
+@app.post("/api/index.php")
+async def dhru_index_api(
+    request: Request,
+    username: str = Form(...),
+    apiaccesskey: str = Form(...),
+    action: str = Form(...),
+    requestformat: str = Form("JSON"),
+    parameters: str = Form("")
+):
+    """
+    Ruta principal pensada para: https://dominio.com/api/index.php
+    """
+    return await _dhru_index_impl(request, username, apiaccesskey, action, requestformat, parameters)
+
+
+@app.post("/index.php")
+async def dhru_index_root(
+    request: Request,
+    username: str = Form(...),
+    apiaccesskey: str = Form(...),
+    action: str = Form(...),
+    requestformat: str = Form("JSON"),
+    parameters: str = Form("")
+):
+    """
+    Ruta espejo por si Dhru llama a https://dominio.com/index.php
+    """
+    return await _dhru_index_impl(request, username, apiaccesskey, action, requestformat, parameters)
 
 
 # ========== ENDPOINTS DE ADMINISTRACIÓN ==========
