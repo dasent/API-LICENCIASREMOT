@@ -419,7 +419,7 @@ async def _dhru_index_impl(
         # por ahora: si no hay mapeo, 1 mes
         meses = DHRU_SERVICE_ID_TO_MONTHS.get(service_id, 1)
 
-        # 2.2 Obtener machine_hash (Machine ID) desde CUSTOMFIELD o IMEI
+         # 2.2 Obtener machine_hash (Machine ID) desde CUSTOMFIELD / IMEI / cualquier otro campo
         machine_hash = ""
 
         customfield = root.findtext("CUSTOMFIELD") or ""
@@ -446,7 +446,17 @@ async def _dhru_index_impl(
 
         # Si no vino por CUSTOMFIELD, usamos IMEI como machine_hash
         if not machine_hash:
-            machine_hash = (root.findtext("IMEI") or "").strip()
+            imei_text = root.findtext("IMEI") or ""
+            machine_hash = imei_text.strip()
+
+        # NUEVO: si sigue vacío, tomamos el PRIMER campo no vacío del XML,
+        # por si Dhru usa otro nombre para el campo (ej: MACHINEIDNUMERODEMAQUINA, etc.)
+        if not machine_hash:
+            for child in root:
+                txt = (child.text or "").strip()
+                if txt:
+                    machine_hash = txt
+                    break
 
         if not machine_hash:
             return {
