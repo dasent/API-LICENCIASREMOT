@@ -535,7 +535,31 @@ async def dhru_index(
             "apiversion": DHRU_API_VERSION
         }
 
+    
+    # ==========================
+    # SERVICELIST (Dhru requiere esto para sincronizar)
+    # ==========================
+
+    if action in ("fileservicelist", "imeiservicelist"):
+        return {
+            "SUCCESS": [
+                {
+                    "MESSAGE": "Service List",
+                    "SERVICES": [
+                        {
+                            "SERVICEID": 1643,
+                            "SERVICENAME": "RemotPress Taller - 1 Mes",
+                            "CREDIT": "0",
+                            "DELIVERYTIME": "Instant"
+                        }
+                    ]
+                }
+            ],
+            "apiversion": DHRU_API_VERSION
+        }
+
     # 3) Acción desconocida
+
     return {
         "ERROR": [
             {
